@@ -71,7 +71,7 @@ func TestWkspcRootDetermination(t *testing.T) {
 		t.Fatal("Folder .dvln should have existed but Exists() said it did not")
 	}
 
-	root, err := Root(fakeWkspcSubDir)
+	root, err := RootDir(fakeWkspcSubDir)
 	if err != nil {
 		t.Fatalf("Search for workspace root from %s should not have returned an error, got %v", fakeWkspcSubDir, err)
 	}
@@ -83,7 +83,7 @@ func TestWkspcRootDetermination(t *testing.T) {
 	}
 
 	privTempFolder := filepath.Join("/", "private", tempFolder)
-	root, err = Root(tempFolder)
+	root, err = RootDir(tempFolder)
 	if err != nil {
 		t.Fatalf("Search for a workspace root dir (from the workspace root dir) got unexpected error: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestWkspcRootDetermination(t *testing.T) {
 	}
 
 	os.Chdir(fakeWkspcSubDir)
-	root, err = Root()
+	root, err = RootDir()
 	if err != nil {
 		t.Fatalf("Search for workspace root after Chdir into wkspc subdir should not have returned an error, got %v", err)
 	}

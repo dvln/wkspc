@@ -19,10 +19,68 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/dvln/codebase"
+	"github.com/dvln/devline"
 	"github.com/dvln/out"
+	"github.com/dvln/pkg"
 	"github.com/dvln/util/dir"
+	"github.com/dvln/util/file"
+	//"github.com/dvln/vcs"
 	globs "github.com/dvln/viper"
 )
+
+// Reader is targeted at reading workspace information (no wkspc meta-data
+// updates will occur during read operations although logging of info is
+// possible during such operations, eg: debugging/tracing)
+type Reader  interface {
+	RootDir(path ...string) (string, error)
+	LogDir() (string, error)
+	TmpDir() (string, error)
+    Codebase() (codebase.Defn, error)
+    CodebaseRev() (pkg.Revision, error)
+	Devline() (devline.Revision, error)
+	Pkg(pkgName string, pkgID int) (pkg.Defn, error)
+	PkgRev(pkgName string, pkgID int) (pkg.Revision, error)
+	PkgDevline(pkgRev pkg.Revision, pkgID int) (devline.Revision, error)
+	//FIXME: it's likely if workspace ops come through this pkg that these
+	//       can be internal functions that are used within the context of
+	//       the operation and not needed in the interface
+	//DBDir() (string, error)
+	//DB() (string, error)
+	//VCSDir() (string, error)
+	//VCSDataDir() (string, error)
+	//VCSDataRepo() (vcs.Repo, error)
+}
+
+// Writer is meant for writing workspace data
+type Writer interface {
+	SetRootDir(rootDir string) error
+    SetCodebase(codebase.Defn) error
+    PullCodebase(codebase.Defn) error
+    //CommitCodebase() error
+    //PushCodebase() error
+    SetDevline(devline.Revision) error
+    CommitDevline() error
+    //PushDevline() error
+    GetPkgRev(pkg.Revision) error // "Get" here relates to '% dvln get ..'
+    PullPkgRev(pkg.Revision) error
+	//CommitPkgRev(pkg.Defn) error
+    //PushPkgRev(pkg.Defn) error
+    RmPkg(pkg.Defn) error
+}
+
+// Info contains, well, information about the workspace (eg: wkspc.Info)
+type Info struct {
+	RootDir string `json:"rootDir,omitempty"`
+	MetaDir string `json:"metaDir,omitempty"`
+	LogDir  string `json:"logDir,omitempty"`
+	TmpDir  string `json:"tmpDir,omitempty"`
+	VCSDir  string `json:"vcsDir,omitempty"`
+	DBDir   string `json:"dbDir,omitempty"`
+	DB      string `json:"db,omitempty"`
+	//multipkg.Hierarchy
+	//multipkg.Pkgs
+}
 
 // doPkgWkspcGlobsInit sets up default settings for any variables/opts used
 // for the dvln wkspc pkg... "globals" so to speak.  These are currently
@@ -52,18 +110,40 @@ func doPkgWkspcGlobsInit() {
 
 	// Section: ConstGlobal variables to store data (default value only, no overrides)
 	// - please add them alphabetically and don't reuse existing opts/vars
-	globs.SetDefault("dvlnwkspcmetadatadir", ".dvln")
-	globs.SetDesc("dvlnwkspcmetadatadir", "where dvln workspace config info lives", globs.ExpertUser, globs.ConstGlobal)
+	globs.SetDefault("wkspcMetaDirName", ".dvln")
+	globs.SetDesc("wkspcMetaDirName", "name of dir under wkspc root where dvln cfg lives", globs.InternalUse, globs.ConstGlobal)
 
-	globs.SetDefault("wkspcroot", "")
-	globs.SetDesc("wkspcroot", "the workspace root directory, if one exists", globs.ExpertUser, globs.ConstGlobal)
+	// Section: InternalGlobal variables to store data (default value, can be changed by this pkg)
+	// - please add them alphabetically and don't reuse existing opts/vars
+	globs.SetDefault("wkspcRootDir", "")
+	globs.SetDesc("wkspcRootDir", "the workspace root directory, if one exists", globs.InternalUse, globs.InternalGlobal)
+
+	globs.SetDefault("wkspcMetaDir", "")
+	globs.SetDesc("wkspcMetaDir", "the .dvln dir under the workspace root dir, empty if no root", globs.InternalUse, globs.InternalGlobal)
+
+	globs.SetDefault("wkspcLogDir", "")
+	globs.SetDesc("wkspcLogDir", "the .dvln/log dir under the workspace root dir, empty if no root", globs.InternalUse, globs.InternalGlobal)
+
+	globs.SetDefault("wkspcTmpDir", "")
+	globs.SetDesc("wkspcTmpDir", "the .dvln/tmp dir under the workspace root dir, empty if no root", globs.InternalUse, globs.InternalGlobal)
+
+	globs.SetDefault("wkspcVCSDir", "")
+	globs.SetDesc("wkspcVCSDir", "the .dvln/vcs dir under the workspace root dir, empty if no root", globs.InternalUse, globs.InternalGlobal)
+
+	globs.SetDefault("wkspcVCSDataDir", "")
+	globs.SetDesc("wkspcVCSDataDir", "the .dvln/vcs/wkspc dir under the workspace root dir, empty if no root", globs.InternalUse, globs.InternalGlobal)
+
+	globs.SetDefault("wkspcDBDir", "")
+	globs.SetDesc("wkspcDBDir", "the .dvln/db dir under the workspace root dir, empty if no root", globs.InternalUse, globs.InternalGlobal)
+
+	globs.SetDefault("wkspcDB", "")
+	globs.SetDesc("wkspcDB", "the .dvln/db/wkspc.db file under the workspace root dir, empty if no root", globs.InternalUse, globs.InternalGlobal)
 
 	// Section: BasicGlobal variables to store data (env, config file, default)
 	// - please add them alphabetically and don't reuse existing opts/vars
 
 	// Section: CLIGlobal class options, vars that can come in from the CLI
 	// - Don't put these here, see cmds/dlvn.go and the cmds/cmdglobs.go file
-	//
 
 	// Section: <add more sections as needed>
 }
@@ -74,27 +154,27 @@ func init() {
 	doPkgWkspcGlobsInit()
 }
 
-// Root will return the path to the top-most workspace root directory
+// RootDir will return the path to the top-most workspace root directory
 // based on our current path unless a "starting directory" path is given
 // (all other params are ignored).  It will return the path to the
 // workspace root if it found one, otherwise "" (a non-nil error implies
 // there was an unexpected problem... ie: not being able to find a workspace
 // root directory is NOT an error condition)
-func Root(path ...string) (string, error) {
+func RootDir(path ...string) (string, error) {
 	// if we've already gotten a workspace root, use it
-	wkspcRoot := globs.GetString("wkspcRoot")
-	if wkspcRoot != "" {
-		return wkspcRoot, nil
+	wkspcRootDir := globs.GetString("wkspcRootDir")
+	if wkspcRootDir != "" {
+		return wkspcRootDir, nil
 	}
 	// otherwise get it (this will always try and find it)
-	return RootFind(path...)
+	return RootDirFind(path...)
 }
 
-// RootFind gets the workspaces root dir (if there is one), note that this will
+// RootDirFind gets the workspaces root dir (if there is one), note that this will
 // not use any "cached" values and it will store the result in globs (viper)
-// under the "wkspcRoot" key (you can access that with any upper/lower case
+// under the "wkspcRootDir" key (you can access that with any upper/lower case
 // as viper is case insensitive).
-func RootFind(path ...string) (string, error) {
+func RootDirFind(path ...string) (string, error) {
 	startDir := ""
 	var err error
 	if path == nil || path[0] == "" {
@@ -105,41 +185,87 @@ func RootFind(path ...string) (string, error) {
 	} else {
 		startDir = path[0]
 	}
-	rootDir, err := dir.FindDirInOrAbove(startDir, globs.GetString("dvlnwkspcmetadatadir"))
-	if err == nil {
-		// keep in mind that this can be "" if not in a dvln workspace
-		SetRoot(rootDir)
+	rootDir, err := dir.FindDirInOrAbove(startDir, globs.GetString("wkspcMetaDirName"))
+	if err == nil && rootDir != "" {
+		// Cache the root dir in "globs" (viper) memory, if we have one
+		globs.Set("wkspcRootDir", rootDir)
 	}
 	return rootDir, err
 }
 
-// SetRoot will set the given dir as the workspace root directory, it will also
+// prepIfNotThere will create the dir if it doesn't exist and store info about
+// it in viper (if a name is given), returns the full dir name and any
+// error that occurs.  Note that "item" can be "" to indicate no sub dir.
+func prepIfNotThere(directory bool, parent, item, name string) (string, error) {
+	var err error
+	fullPath := ""
+	if item != "" {
+		fullPath = filepath.Join(parent, item)
+	} else {
+		fullPath = parent
+	}
+	if name != "" {
+		globs.Set(name, fullPath)
+	}
+	if fullPath != "" {
+		if directory {
+			err = dir.CreateIfNotExists(fullPath)
+		} else {
+			err = file.CreateIfNotExists(fullPath)
+		}
+	}
+	return fullPath, err
+}
+
+// SetRootDir will set the given dir as the workspace root directory, it will also
 // set some "derived" settings in globs (viper) such as:
-//   wkspcMetaDir: $wsroot/.dvln
-//   wkspcLogDir:  $wsroot/.dvln/log
-//   wkspcTmpDir:  $wsroot/.dvln/tmp
-//   wkspcDBDir:   $wsroot/.dvln/db
-//   wkspcDB:      $wsroot/.dvln/db/bolt.db
+//   wkspcMetaDir:    $wsroot/.dvln
+//   wkspcLogDir:     $wsroot/.dvln/log
+//   wkspcTmpDir:     $wsroot/.dvln/tmp
+//   wkspcVCSDir:     $wsroot/.dvln/vcs
+//   wkspcVCSDataDir: $wsroot/.dvln/vcs/wkspc
+//   wkspcDBDir:      $wsroot/.dvln/db
+//   wkspcDB:         $wsroot/.dvln/db/wkspc.db
 // As other dirs or files are added relative to the .dvln/ wkspc meta-data dir
 // they can be added here to "bootstap" them.  Note that if
-func SetRoot(dir string) {
-	globs.Set("wkspcRoot", dir)
-	if dir != "" {
-		wkspcMetaDir := filepath.Join(dir, globs.GetString("dvlnwkspcmetadatadir"))
-		globs.Set("wkspcMetaDir", wkspcMetaDir)
-		wkspcLogDir := filepath.Join(wkspcMetaDir, "log")
-		globs.Set("wkspcLogDir", wkspcLogDir)
-		wkspcTmpDir := filepath.Join(wkspcMetaDir, "tmp")
-		globs.Set("wkspcTmpDir", wkspcTmpDir)
-		wkspcDBDir := filepath.Join(wkspcMetaDir, "db")
-		globs.Set("wkspcDBDir", wkspcDBDir)
-		wkspcDB := filepath.Join(wkspcDBDir, "bolt.db")
-		globs.Set("wkspcDB", wkspcDB)
-	} else {
-		globs.Set("wkspcMetaDir", "")
-		globs.Set("wkspcLogDir", "")
-		globs.Set("wkspcTmpDir", "")
-		globs.Set("wkspcDBDir", "")
-		globs.Set("wkspcDB", "")
+func SetRootDir(rootDir string) error {
+	directory := true
+	_, err := prepIfNotThere(directory, rootDir, "", "wkspcRootDir")
+	if err != nil {
+		return err
 	}
+	wkspcMetaDir, err := prepIfNotThere(directory, rootDir, globs.GetString("wkspcMetaDirName"), "wkspcMetaDir")
+	if err != nil {
+		return err
+	}
+	_, err = prepIfNotThere(directory, wkspcMetaDir, "log", "wkspcLogDir")
+	if err != nil {
+		return err
+	}
+	_, err = prepIfNotThere(directory, wkspcMetaDir, "tmp", "wkspcTmpDir")
+	if err != nil {
+		return err
+	}
+	wkspcVCSDir, err := prepIfNotThere(directory, wkspcMetaDir, "vcs", "wkspcVCSDir")
+	if err != nil {
+		return err
+	}
+	wkspcVCSDataDir, err := prepIfNotThere(directory, wkspcVCSDir, "wkspc", "wkspcVCSDataDir")
+	if err != nil {
+		return err
+	}
+	_, err = prepIfNotThere(!directory, wkspcVCSDataDir, "static.dvln", "wkspcStaticDvln")
+	if err != nil {
+		return err
+	}
+	wkspcDBDir, err := prepIfNotThere(directory, wkspcMetaDir, "db", "wkspcDBDir")
+	if err != nil {
+		return err
+	}
+	_, err = prepIfNotThere(!directory, wkspcDBDir, "wkspc.db", "wkspcDB")
+	if err != nil {
+		return err
+	}
+	return nil
 }
+
