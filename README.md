@@ -1,2 +1,2 @@
 # wkspc
-Workspace manipulation package for dvln
+Workspace manipulation package for dvln.

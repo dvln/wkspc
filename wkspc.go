@@ -32,12 +32,12 @@ import (
 // Reader is targeted at reading workspace information (no wkspc meta-data
 // updates will occur during read operations although logging of info is
 // possible during such operations, eg: debugging/tracing)
-type Reader  interface {
+type Reader interface {
 	RootDir(path ...string) (string, error)
 	LogDir() (string, error)
 	TmpDir() (string, error)
-    Codebase() (codebase.Defn, error)
-    CodebaseRev() (pkg.Revision, error)
+	Codebase() (codebase.Defn, error)
+	CodebaseRev() (pkg.Revision, error)
 	Devline() (devline.Revision, error)
 	Pkg(pkgName string, pkgID int) (pkg.Defn, error)
 	PkgRev(pkgName string, pkgID int) (pkg.Revision, error)
@@ -55,18 +55,18 @@ type Reader  interface {
 // Writer is meant for writing workspace data
 type Writer interface {
 	SetRootDir(rootDir string) error
-    SetCodebase(codebase.Defn) error
-    PullCodebase(codebase.Defn) error
-    //CommitCodebase() error
-    //PushCodebase() error
-    SetDevline(devline.Revision) error
-    CommitDevline() error
-    //PushDevline() error
-    GetPkgRev(pkg.Revision) error // "Get" here relates to '% dvln get ..'
-    PullPkgRev(pkg.Revision) error
+	SetCodebase(codebase.Defn) error
+	UpdCodebase(codebase.Defn) error
+	//CommitCodebase() error
+	//PushCodebase() error
+	SetDevline(devline.Revision) error
+	CommitDevline() error
+	//PushDevline() error
+	GetPkgRev(pkg.Revision) error // "Get" here relates to '% dvln get ..'
+	PullPkgRev(pkg.Revision) error
 	//CommitPkgRev(pkg.Defn) error
-    //PushPkgRev(pkg.Defn) error
-    RmPkg(pkg.Defn) error
+	//PushPkgRev(pkg.Defn) error
+	RmPkg(pkg.Defn) error
 }
 
 // Info contains, well, information about the workspace (eg: wkspc.Info)
@@ -115,7 +115,7 @@ func doPkgWkspcGlobsInit() {
 
 	// Section: InternalGlobal variables to store data (default value, can be changed by this pkg)
 	// - please add them alphabetically and don't reuse existing opts/vars
-	globs.SetDefault("wkspcRootDir", "")
+	globs.SetDefault("wkspcRootDir", "none")
 	globs.SetDesc("wkspcRootDir", "the workspace root directory, if one exists", globs.InternalUse, globs.InternalGlobal)
 
 	globs.SetDefault("wkspcMetaDir", "")
@@ -159,14 +159,15 @@ func init() {
 // (all other params are ignored).  It will return the path to the
 // workspace root if it found one, otherwise "" (a non-nil error implies
 // there was an unexpected problem... ie: not being able to find a workspace
-// root directory is NOT an error condition)
+// root directory is NOT an error condition).  Note: if you wish to bypass
+// cached workspace root info then use RootDirFind() directly instead.
 func RootDir(path ...string) (string, error) {
-	// if we've already gotten a workspace root, use it
-	wkspcRootDir := globs.GetString("wkspcRootDir")
-	if wkspcRootDir != "" {
+	// wkspcRootDir starts out as "none", if something else we've calc'd it..
+	wkspcRootDir := globs.GetString("wkspcrootDir")
+	if wkspcRootDir != "none" {
 		return wkspcRootDir, nil
 	}
-	// otherwise get it (this will always try and find it)
+	// otherwise find it (this will always try and find it and cache it)
 	return RootDirFind(path...)
 }
 
@@ -186,8 +187,8 @@ func RootDirFind(path ...string) (string, error) {
 		startDir = path[0]
 	}
 	rootDir, err := dir.FindDirInOrAbove(startDir, globs.GetString("wkspcMetaDirName"))
-	if err == nil && rootDir != "" {
-		// Cache the root dir in "globs" (viper) memory, if we have one
+	if err == nil {
+		// Cache the root dir in "globs" (viper) memory if no error
 		globs.Set("wkspcRootDir", rootDir)
 	}
 	return rootDir, err
@@ -229,6 +230,11 @@ func prepIfNotThere(directory bool, parent, item, name string) (string, error) {
 // As other dirs or files are added relative to the .dvln/ wkspc meta-data dir
 // they can be added here to "bootstap" them.  Note that if
 func SetRootDir(rootDir string) error {
+	if rootDir == "" {
+		// if there is no root dir found allow it to be set to "" and bail
+		globs.Set("wkspcRootDir", rootDir)
+		return nil
+	}
 	directory := true
 	_, err := prepIfNotThere(directory, rootDir, "", "wkspcRootDir")
 	if err != nil {
@@ -268,4 +274,3 @@ func SetRootDir(rootDir string) error {
 	}
 	return nil
 }
-
